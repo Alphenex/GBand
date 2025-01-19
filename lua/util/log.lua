@@ -1,5 +1,5 @@
 GBand = {}
 
 function GBand:LogError(str)
-	print("[GBand] " .. str)
+	print("[GBAND ERROR] " .. str)
 end

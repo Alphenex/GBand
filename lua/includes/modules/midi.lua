@@ -1,94 +1,10 @@
 include("util/log.lua")
-
-// ------------------------ //
-// ------ MIDI EVENT ------ //
-// ------------------------ //
-
-MIDI_CHANNEL = 0
-MIDI_NOTE = 1 // Normally Midi Channel Note on or Note off events however we seperated them because it is easier to process them
-MIDI_META = 2
-MIDI_TEXT = 3
-
-MIDI_CHANNEL_NOTEOFF = 0x80 // This and the one below won't be used, only for easy check
-MIDI_CHANNEL_NOTEON = 0x90
-MIDI_CHANNEL_KEYAFTERTOUCH = 0xA0
-MIDI_CHANNEL_CONTROLCHANGE = 0xB0
-MIDI_CHANNEL_PROGRAMCHANGE = 0xC0
-MIDI_CHANNEL_CHANNELAFTERTOUCH = 0xD0
-MIDI_CHANNEL_PITCHBENDCHANGE = 0xE0
-
-MIDI_CHANNEL_BANKSELECT = 0x00
-MIDI_CHANNEL_MODULATION = 0x01
-MIDI_CHANNEL_VOLUME = 0x07
-MIDI_CHANNEL_BALANCE = 0x08
-MIDI_CHANNEL_PAN = 0x0A
-MIDI_CHANNEL_SUSTAIN = 0x40
-
-MIDI_META_TEMPO = 0x51
-MIDI_META_TIMESIGNATURE = 0x58
-MIDI_META_KEYSIGNATURE = 0x59
-
-MIDI_TEXT_TEXT = 0x01
-MIDI_TEXT_COPYRIGHT = 0x02
-MIDI_TEXT_TRACKNAME = 0x03
-MIDI_TEXT_INSTRUMENTNAME = 0x04
-MIDI_TEXT_LYRICS = 0x05
-MIDI_TEXT_MARKER = 0x06
-MIDI_TEXT_CUEPOINT = 0x07
-
-MidiEvent = {}
-MidiEvent.__index = MidiEvent
-
-function MidiEvent:new(event_type, event_sub_type, time)
-	local _MidiEvent = {
-		eventType = event_type or nil,
-		eventSubType = event_sub_type or nil, 
-		time = time or 0
-	}
-
-	setmetatable(_MidiEvent, MidiEvent)
-	return _MidiEvent 
-end
-
-setmetatable( MidiEvent, {__call = MidiEvent.new } )
-
-// ------------------------ //
-// ------ MIDI TRACK ------ //
-// ------------------------ //
-
-MidiTrack = {}
-MidiTrack.__index = MidiTrack
-
-function MidiTrack:new(name, index, time_length)
-	local _MidiTrack = {
-		name = name or nil,
-		index = index or 0,
-		timeLength = time_length or 0,
-
-		events = {}, // Stored by the time when they are run, basically if it is run at 500th tick then it is stored at events[500]
-		categorizedEvents = {}
-	}
-
-	_MidiTrack.categorizedEvents[MIDI_CHANNEL] = {}
-	_MidiTrack.categorizedEvents[MIDI_NOTE] = {}
-	_MidiTrack.categorizedEvents[MIDI_META] = {}
-	_MidiTrack.categorizedEvents[MIDI_TEXT] = {}
-
-	setmetatable(_MidiTrack, MidiTrack)
-	return _MidiTrack 
-end
-
-setmetatable( MidiTrack, {__call = MidiTrack.new } )
-
-// ----------------------- //
-// ------ MIDI FILE ------ //
-// ----------------------- //
+include("includes/modules/song.lua")
 
 MidiFile = {}
-MidiFile.__index = MidiFile
 
-function MidiFile:new(path)
-	if path == nil then return end
+function MidiFile:LoadMidiSong(path)
+	if path == nil then return nil end
 
 	local FILE = file.Open(path, "rb", "DATA")
 	// TODO: Instead get the charts from Chorus Encore?
@@ -110,8 +26,11 @@ function MidiFile:new(path)
 		format = format or 0,
 		trackCount = trackCount or 0,
 		timeDivision = timeDivision or 0,
+		timeLength = 0,
 		tracks = {}
 	}
+
+	local maxTime = 0
 
 	// PARSE MIDI TRACKS
 	for i = 1, _midi.trackCount do
@@ -123,7 +42,7 @@ function MidiFile:new(path)
 			return nil
 		end
 
-		local track = MidiTrack() // Create an almost empty track
+		local track = Track() // Create an almost empty track
 
 		local trackLength = FILE:ReadBEUInt32()
 		local trackEnd = FILE:Tell() + trackLength
@@ -151,36 +70,36 @@ function MidiFile:new(path)
 
 				local d1 = FILE:ReadByte()
 				local d2 = 0
-				if (bit.band(eventType, 0xE0) != MIDI_CHANNEL_PROGRAMCHANGE) then d2 = FILE:ReadByte() end
+				if (bit.band(eventType, 0xE0) != EVENT_CHANNEL_PROGRAMCHANGE) then d2 = FILE:ReadByte() end
 					
-				if (eventType == MIDI_CHANNEL_NOTEON && d2 == 0) then eventType = MIDI_CHANNEL_NOTEOFF end // Note Ons with no velocity are Note Offs
+				if (eventType == EVENT_CHANNEL_NOTEON && d2 == 0) then eventType = EVENT_CHANNEL_NOTEOFF end // Note Ons with no velocity are Note Offs
 
-				if (eventType == MIDI_CHANNEL_NOTEOFF) then
+				if (eventType == EVENT_CHANNEL_NOTEOFF) then
 					local noteOn = latestNoteOn[d1]
 					if (noteOn != nil) then
-						local event = MidiEvent(MIDI_NOTE, nil, noteOn.time)
-						event.channel = channel
+						local event = TrackEvent(EVENT_NOTE, nil, noteOn.time)
 						event.note = d1
-						event.velocity = noteOn.velocity
 						event.duration = time - noteOn.time
+						//event.channel = channel			!UNUSED!
+						//event.velocity = noteOn.velocity	!UNUSED!
 
 						if (track.events[noteOn.time] == nil) then track.events[noteOn.time] = {} end
 						table.insert(track.events[noteOn.time], event)
-						table.insert(track.categorizedEvents[MIDI_NOTE], event)
+						table.insert(track.categorizedEvents[EVENT_NOTE], event)
 
 						latestNoteOn[d1] = nil
 					end
-				elseif (eventType == MIDI_CHANNEL_NOTEON) then
+				elseif (eventType == EVENT_CHANNEL_NOTEON) then
 					latestNoteOn[d1] = { time = time, velocity = d2 }
 				else
-					local event = MidiEvent(MIDI_CHANNEL, eventType, noteOn.time)
-					event.channel = channel
+					local event = TrackEvent(EVENT_CHANNEL, eventType, noteOn.time)
+					//event.channel = channel	!UNUSED!
 					event.d1 = d1
 					event.d2 = d2
 
 					if (track.events[time] == nil) then track.events[time] = {} end
 					table.insert(track.events[time], event)
-					table.insert(track.categorizedEvents[MIDI_CHANNEL], event)
+					table.insert(track.categorizedEvents[EVENT_CHANNEL], event)
 				end
 
 			else 
@@ -192,26 +111,28 @@ function MidiFile:new(path)
 						local textLength = FILE:ReadUVariedData()
 						local text = FILE:Read(textLength)
 
-						if (metaType  == MIDI_TEXT_TRACKNAME) then track.name = text end 
+						if (text[1] == "[" && text[#text] == "]") then text = string.sub(text, 2, #text - 1) end // if the text starts and ends with brackets then remove the brackets
 
-						local event = MidiEvent(MIDI_TEXT, status, time)
+						if (metaType  == EVENT_TEXT_TRACKNAME) then track.name = text end 
+
+						local event = TrackEvent(EVENT_TEXT, status, time)
 						event.text = text
 
 						if (track.events[time] == nil) then track.events[time] = {} end
 						table.insert(track.events[time], event)
-						table.insert(track.categorizedEvents[MIDI_TEXT], event)
+						table.insert(track.categorizedEvents[EVENT_TEXT], event)
 					else
-						local event = MidiEvent(MIDI_META, metaType, time)
+						local event = TrackEvent(EVENT_META, metaType, time)
 
-						if (metaType == MIDI_META_TEMPO) then // TEMPO
+						if (metaType == EVENT_META_TEMPO) then // TEMPO
 							local mspqn = FILE:ReadBEUInt24()
-							event.tempo = math.floor(60000000.0 / mspqn)
+							event.tempo = 60000000.0 / mspqn
 
 							if (track.events[time] == nil) then track.events[time] = {} end
 							table.insert(track.events[time], 1, event) // NOTE: Tempo events are always the first in timed event tables
-							table.insert(track.categorizedEvents[MIDI_META], event)
+							table.insert(track.categorizedEvents[EVENT_META], event)
 
-						elseif (metaType == MIDI_META_TIMESIGNATURE) then // TIME SIGNATURE						
+						elseif (metaType == EVENT_META_TIMESIGNATURE) then // TIME SIGNATURE						
 							FILE:Skip(1)
 							event.numerator = FILE:ReadByte() 
 							event.denominator = math.pow(FILE:ReadByte(), 2.0)
@@ -219,22 +140,22 @@ function MidiFile:new(path)
 
 							if (track.events[time] == nil) then track.events[time] = {} end
 							table.insert(track.events[time], event)
-							table.insert(track.categorizedEvents[MIDI_META], event)
+							table.insert(track.categorizedEvents[EVENT_META], event)
 
-						elseif (metaType == MIDI_META_KEYSIGNATURE) then // KEY SIGNATURE
+						elseif (metaType == EVENT_META_KEYSIGNATURE) then // KEY SIGNATURE
 							FILE:Skip(1)
 							event.numerator = FILE:ReadByte() 
 							event.denominator = FILE:ReadByte()
 
-							if (track.events[time] == nil) then track.events[time] = {} end
-							table.insert(track.events[time], event)
-							table.insert(track.categorizedEvents[MIDI_META], event)
+							//if (track.events[time] == nil) then track.events[time] = {} end
+							//table.insert(track.events[time], event)
+							//table.insert(track.categorizedEvents[EVENT_META], event)
 						else
 							FILE:Skip(FILE:ReadUVariedData())
 						end
 					end
 				elseif (status == 0xF0 || status == 0xF7) then
-					FILE:Skip(FILE:ReadUVariedData()) // Sysex Event, just skip
+					FILE:Skip(FILE:ReadUVariedData()) // TODO: Process these!
 				else 
 					FILE:Skip(1) // No fucking clue, also skip
 				end
@@ -243,19 +164,18 @@ function MidiFile:new(path)
 		end
 
 		track.index = i
-		track.timeLength = time
+		maxTime = math.max(maxTime, time)
 
 		_midi.tracks[i] = track
 		if (_midi.name != nil) then _midi.tracks[_midi.name] = track end
 	end
 
+	_midi.timeLength = maxTime
+	
 	FILE:Close()
 	
-	setmetatable(_midi, MidiFile)
 	return _midi 
 end
-
-setmetatable( MidiFile, {__call = MidiFile.new } )
 
 // I hate myself
 local _fileMeta = FindMetaTable("File")
